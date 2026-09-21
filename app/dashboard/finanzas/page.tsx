@@ -26,6 +26,7 @@ interface SaleRecord {
   id: string
   product_id?: string
   advisor_name?: string
+  customer_name?: string
   total_price: number
   quantity: number
   quantity_paid?: number
@@ -121,7 +122,6 @@ export default function FinancePage() {
     fetchData()
   }, [fetchData])
 
-  // Abrir modal de edición parcial de cobro
   const handleOpenEditSale = (sale: SaleRecord) => {
     const totalQty = sale.quantity || 1
     const paid = sale.quantity_paid !== undefined ? sale.quantity_paid : (sale.payment_status === 'por_cobrar' ? 0 : totalQty)
@@ -132,7 +132,6 @@ export default function FinancePage() {
     setEditPendingQty(pending)
   }
 
-  // Guardar edición parcial de cobro
   const handleSaveSalePaymentSplit = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!editingSale) return
@@ -161,7 +160,7 @@ export default function FinancePage() {
       await fetchData()
     } catch (error) {
       console.error('Error actualizando desglose de cobro:', error)
-      alert('Error al actualizar. Asegúrate de haber ejecutado el comando SQL para agregar quantity_paid y quantity_pending.')
+      alert('Error al actualizar.')
     } finally {
       setIsSubmittingEdit(false)
     }
@@ -196,6 +195,8 @@ export default function FinancePage() {
       const matchesSearch =
         (sale.advisor_name &&
           sale.advisor_name.toLowerCase().includes(searchTerm.toLowerCase())) ||
+        (sale.customer_name &&
+          sale.customer_name.toLowerCase().includes(searchTerm.toLowerCase())) ||
         (sale.products?.name &&
           sale.products.name.toLowerCase().includes(searchTerm.toLowerCase()))
 
@@ -203,7 +204,6 @@ export default function FinancePage() {
     })
   }, [sales, timeRange, activeTab, searchTerm])
 
-  // Cálculo de comisiones por asesor
   const advisorCommissionsOwed = useMemo(() => {
     const map: Record<string, { totalSales: number; totalPaid: number; pending: number }> = {}
 
@@ -233,7 +233,6 @@ export default function FinancePage() {
     return map
   }, [advisors, sales, paymentRecords])
 
-  // Cálculo de métricas financieras
   const financialMetrics = useMemo(() => {
     let totalRevenue = 0
     let totalReceivables = 0
@@ -272,8 +271,6 @@ export default function FinancePage() {
 
     const totalAppMaintenanceFee = totalRevenue * 0.03
     const phantomMaintenancePending = Math.max(0, totalAppMaintenanceFee - totalPaidMaintenance)
-
-    // Ganancia Real Neta = Ganancia Base - Mantenimiento pagado - Comisiones pagadas - Cuentas por cobrar
     const netRealProfit = baseRealProfit - totalPaidMaintenance - totalPaidCommissions - totalReceivables
 
     let filteredRevenue = 0
@@ -301,7 +298,6 @@ export default function FinancePage() {
     }
   }, [sales, filteredSales, paymentRecords])
 
-  // Registrar Ingreso Directo
   const handleCreateDirectSale = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!amount || Number(amount) <= 0) return
@@ -310,6 +306,7 @@ export default function FinancePage() {
     try {
       const { error } = await supabase.from('sales').insert({
         advisor_name: advisorName || 'General',
+        customer_name: 'Cliente General',
         total_price: Number(amount),
         quantity: 1,
         quantity_paid: 1,
@@ -331,7 +328,6 @@ export default function FinancePage() {
     }
   }
 
-  // Registrar Pago de Mantenimiento
   const handleRegisterMaintenancePayment = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!maintenanceAmount || Number(maintenanceAmount) <= 0) return
@@ -360,7 +356,6 @@ export default function FinancePage() {
     }
   }
 
-  // Registrar Pago de Comisión
   const handleRegisterCommissionPayment = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!commissionAmount || Number(commissionAmount) <= 0) return
@@ -539,7 +534,7 @@ export default function FinancePage() {
           <Search className="absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-neutral-500" />
           <input
             type="text"
-            placeholder="Buscar por asesor o producto..."
+            placeholder="Buscar por cliente, asesor o producto..."
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
             className="w-full rounded-xl border border-neutral-800 bg-neutral-950 py-2.5 pl-10 pr-4 text-xs font-semibold text-white placeholder-neutral-500 outline-none transition focus:border-emerald-500"
@@ -569,7 +564,7 @@ export default function FinancePage() {
               <thead className="border-b border-neutral-800 bg-neutral-950/60 text-[10px] uppercase tracking-widest text-neutral-400">
                 <tr>
                   <th className="p-4">Fecha & Hora</th>
-                  <th className="p-4">Detalle / Producto</th>
+                  <th className="p-4">Cliente / Producto</th>
                   <th className="p-4">Asesor</th>
                   <th className="p-4 text-center">Desglose (Contado / Pend.)</th>
                   <th className="p-4 text-center">Estado</th>
@@ -596,14 +591,12 @@ export default function FinancePage() {
                         </div>
                       </td>
                       <td className="p-4">
-                        <span className="font-bold uppercase text-white">
+                        <span className="block font-bold uppercase text-white">
                           {sale.products?.name || 'Ingreso Directo'}
                         </span>
-                        {sale.products?.category && (
-                          <span className="ml-2 rounded-md bg-neutral-800 px-2 py-0.5 text-[10px] uppercase text-neutral-400">
-                            {sale.products.category}
-                          </span>
-                        )}
+                        <span className="block text-[10px] font-semibold text-neutral-400">
+                          Cliente: <strong className="text-emerald-400 uppercase">{sale.customer_name || 'Cliente General'}</strong>
+                        </span>
                       </td>
                       <td className="p-4">
                         <div className="flex items-center gap-1.5 font-semibold text-neutral-300">
@@ -645,7 +638,7 @@ export default function FinancePage() {
         )}
       </div>
 
-      {/* MODAL EDITAR DESGLOSE DE COBRO (PARCIAL O TOTAL) */}
+      {/* MODAL EDITAR DESGLOSE DE COBRO */}
       {editingSale && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm">
           <div className="w-full max-w-md rounded-3xl border border-neutral-800 bg-neutral-900 p-8 shadow-2xl space-y-6">
@@ -663,7 +656,7 @@ export default function FinancePage() {
                 {editingSale.products?.name || 'Ingreso Directo'}
               </p>
               <p className="text-[10px] text-neutral-400 font-mono">
-                Cantidad Total: <strong className="text-white">{editingSale.quantity || 1}</strong> | Monto Total: <strong className="text-emerald-400">${editingSale.total_price}</strong>
+                Cliente: <strong className="text-white uppercase">{editingSale.customer_name || 'Cliente General'}</strong> | Cantidad Total: <strong className="text-white">{editingSale.quantity || 1}</strong>
               </p>
             </div>
 
@@ -705,7 +698,7 @@ export default function FinancePage() {
                       setEditPendingQty(clamped)
                       setEditPaidQty(max - clamped)
                     }}
-                    className="w-full rounded-2xl border border-neutral-800 bg-neutral-950 px-4 py-3 font-mono text-sm font-bold text-amber-400 outline-none focus:border-amber-500 text-center"
+                    className="w-full rounded-2xl border border-neutral-800 bg-neutral-950 px-4 py-3 font-mono text-sm font-bold text-amber-400 outline-none focus:border-emerald-500 text-center"
                   />
                 </div>
               </div>
@@ -930,7 +923,6 @@ export default function FinancePage() {
                     placeholder="Ej: REF-98765432"
                     value={commissionRef}
                     onChange={(e) => setCommissionRef(e.target.value)}
-                    className="w-fullRef"
                     className="w-full rounded-2xl border border-neutral-800 bg-neutral-950 px-4 py-3 text-xs text-white outline-none focus:border-amber-500"
                   />
                 </div>

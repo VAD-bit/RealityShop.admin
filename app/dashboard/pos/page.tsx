@@ -12,7 +12,8 @@ import {
   Smartphone, 
   Banknote, 
   DollarSign,
-  UserCheck
+  UserCheck,
+  User
 } from 'lucide-react'
 import Image from 'next/image'
 import { ProductItem, InventoryVariant } from '@/lib/types'
@@ -36,16 +37,17 @@ export default function POSPage() {
   const [searchTerm, setSearchTerm] = useState<string>('')
   const [selectedCategory, setSelectedCategory] = useState<string>('all')
 
-  // Carrito de compras
+  // Carrito y datos de factura
   const [cart, setCart] = useState<CartItem[]>([])
   const [selectedAdvisor, setSelectedAdvisor] = useState<string>(DEFAULT_ADVISORS[0]?.name || '')
+  const [customerName, setCustomerName] = useState<string>('')
   const [paymentMethod, setPaymentMethod] = useState<string>('Efectivo')
   const [customTotal, setCustomTotal] = useState<string>('')
   const [isProcessing, setIsProcessing] = useState<boolean>(false)
   const [lastCompletedSale, setLastCompletedSale] = useState<any>(null)
   const [showReceiptModal, setShowReceiptModal] = useState<boolean>(false)
 
-  // Modal para seleccionar talla
+  // Modal talla
   const [activeProductForVariant, setActiveProductForVariant] = useState<ProductItem | null>(null)
 
   const fetchData = useCallback(async () => {
@@ -100,7 +102,7 @@ export default function POSPage() {
         const currentQty = updated[existingIndex].quantity
         if (currentQty < variant.stock) {
           updated[existingIndex].quantity += 1
-          updated[existingIndex].quantityPaid += 1 // por defecto todo contado
+          updated[existingIndex].quantityPaid += 1
         }
         return updated
       } else {
@@ -120,7 +122,6 @@ export default function POSPage() {
         return prev.filter((_, i) => i !== index)
       } else if (newQty <= item.variant.stock) {
         item.quantity = newQty
-        // Ajustar quantityPaid proporcionalmente o dejar quantityPaid por defecto igual a newQty
         item.quantityPaid = newQty
         item.quantityPending = 0
       }
@@ -155,14 +156,16 @@ export default function POSPage() {
 
     try {
       const saleDate = new Date().toISOString()
+      const finalCustomer = customerName.trim() || 'Cliente General'
       
       for (const item of cart) {
         const itemTotal = (Number(item.product.price) || 0) * item.quantity
-        const paymentStatus = item.quantityPending > 0 && item.quantityPaid === 0 ? 'por_cobrar' : 'pagado'
+        const paymentStatus = item.quantityPending > 0 && item.quantityPaid === 0 ? 'por_cobrar' : (item.quantityPending > 0 ? 'por_cobrar' : 'pagado')
 
         await supabase.from('sales').insert({
           product_id: item.product.id,
           advisor_name: selectedAdvisor || 'General',
+          customer_name: finalCustomer,
           total_price: itemTotal,
           quantity: item.quantity,
           quantity_paid: item.quantityPaid,
@@ -184,6 +187,7 @@ export default function POSPage() {
         id: Math.random().toString(36).substring(7).toUpperCase(),
         date: new Date().toLocaleString(),
         advisor: selectedAdvisor,
+        customer: finalCustomer,
         paymentMethod,
         items: [...cart],
         subtotal: calculatedSubtotal,
@@ -194,6 +198,7 @@ export default function POSPage() {
       setShowReceiptModal(true)
       setCart([])
       setCustomTotal('')
+      setCustomerName('')
       await fetchData()
     } catch (error) {
       console.error('Error procesando venta POS:', error)
@@ -310,10 +315,10 @@ export default function POSPage() {
         )}
       </div>
 
-      {/* COLUMNA DERECHA: CARRITO Y DIVISIÓN CONTADO / PENDIENTE */}
+      {/* COLUMNA DERECHA: CARRITO Y DATOS DE CLIENTE */}
       <div className="lg:col-span-5 space-y-6">
         <div className="rounded-2xl border border-neutral-800 bg-neutral-900/60 p-5 backdrop-blur-md flex flex-col justify-between min-h-[650px] shadow-2xl">
-          <div className="space-y-5">
+          <div className="space-y-4">
             <div className="flex items-center justify-between border-b border-neutral-800 pb-4">
               <div className="flex items-center gap-2">
                 <ShoppingCart className="size-5 text-red-500" />
@@ -324,6 +329,20 @@ export default function POSPage() {
               <span className="rounded-full bg-red-600/20 border border-red-500/30 px-2.5 py-0.5 font-mono text-xs font-bold text-red-400">
                 {cart.reduce((sum, i) => sum + i.quantity, 0)} ítems
               </span>
+            </div>
+
+            {/* NOMBRE DEL CLIENTE */}
+            <div className="space-y-1.5">
+              <label className="flex items-center gap-1.5 text-[10px] font-black uppercase tracking-widest text-neutral-400">
+                <User className="size-3.5 text-red-500" /> Nombre del Cliente (Obligatorio o Crédito)
+              </label>
+              <input
+                type="text"
+                placeholder="Ej. Juan Pérez / Empresa C.A."
+                value={customerName}
+                onChange={(e) => setCustomerName(e.target.value)}
+                className="w-full rounded-xl border border-neutral-800 bg-neutral-950 px-3.5 py-2.5 text-xs font-semibold text-white placeholder-neutral-500 outline-none focus:border-red-600 transition"
+              />
             </div>
 
             <div className="space-y-1.5">
@@ -361,7 +380,7 @@ export default function POSPage() {
                       key={m.id}
                       type="button"
                       onClick={() => setPaymentMethod(m.id)}
-                      className={`flex items-center gap-2 rounded-xl border p-2.5 text-xs font-bold uppercase transition ${
+                      className={`flex items-center gap-2 rounded-xl border p-2 text-xs font-bold uppercase transition ${
                         active
                           ? 'border-red-600 bg-red-600/15 text-white shadow-sm'
                           : 'border-neutral-800 bg-neutral-950 text-neutral-400 hover:text-white'
@@ -379,9 +398,9 @@ export default function POSPage() {
               <label className="text-[10px] font-black uppercase tracking-widest text-neutral-400">
                 Productos en Carrito
               </label>
-              <div className="max-h-60 overflow-y-auto space-y-3 pr-1">
+              <div className="max-h-48 overflow-y-auto space-y-3 pr-1">
                 {cart.length === 0 ? (
-                  <div className="py-12 text-center text-xs font-bold uppercase text-neutral-500">
+                  <div className="py-8 text-center text-xs font-bold uppercase text-neutral-500">
                     El carrito está vacío. Haz clic en un producto para agregarlo.
                   </div>
                 ) : (
@@ -436,9 +455,8 @@ export default function POSPage() {
                           </div>
                         </div>
 
-                        {/* SI LA CANTIDAD ES 2 O MÁS, DESPLEGAR MENÚ PARA ELEGIR CONTADO VS PENDIENTE */}
                         {hasMultiple && (
-                          <div className="rounded-lg border border-amber-500/30 bg-amber-950/10 p-2.5 space-y-1.5">
+                          <div className="rounded-lg border border-amber-500/30 bg-amber-950/10 p-2 space-y-1">
                             <span className="text-[10px] font-black uppercase text-amber-400 block">
                               Desglose de Pago (Total: {item.quantity})
                             </span>
@@ -571,6 +589,10 @@ export default function POSPage() {
               </div>
 
               <div className="grid grid-cols-2 gap-4 text-xs">
+                <div>
+                  <span className="block text-neutral-500 uppercase text-[10px] font-bold">Cliente:</span>
+                  <strong className="text-black uppercase">{lastCompletedSale.customer}</strong>
+                </div>
                 <div>
                   <span className="block text-neutral-500 uppercase text-[10px] font-bold">Fecha y Hora:</span>
                   <strong className="font-mono text-black">{lastCompletedSale.date}</strong>
