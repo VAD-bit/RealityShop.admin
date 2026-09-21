@@ -14,7 +14,6 @@ import {
   Wrench,
   Award,
   Clock,
-  CheckCircle2,
   X
 } from 'lucide-react'
 import { ADVISORS as DEFAULT_ADVISORS } from '@/lib/constants'
@@ -126,7 +125,7 @@ export default function FinancePage() {
       await fetchData()
     } catch (error) {
       console.error('Error actualizando estado de pago:', error)
-      alert('Error al actualizar estado de cobro (asegúrate de haber ejecutado la migración de la columna payment_status en Supabase).')
+      alert('Error al actualizar estado de cobro.')
     }
   }
 
@@ -135,7 +134,6 @@ export default function FinancePage() {
     const now = new Date()
 
     return sales.filter((sale) => {
-      // Pestaña Cuentas por Cobrar
       if (activeTab === 'receivables' && sale.payment_status !== 'por_cobrar') {
         return false
       }
@@ -194,11 +192,11 @@ export default function FinancePage() {
     return map
   }, [advisors, sales, paymentRecords])
 
-  // Cálculo de métricas financieras y cuentas por cobrar
+  // Cálculo de métricas financieras actualizadas
   const financialMetrics = useMemo(() => {
     let totalRevenue = 0
     let totalUnits = 0
-    let totalRealProfit = 0
+    let baseRealProfit = 0
     let totalReceivables = 0
 
     sales.forEach((sale) => {
@@ -216,11 +214,23 @@ export default function FinancePage() {
       if (sale.products) {
         const unitCost = Number(sale.products.cost_price) || 0
         const unitPrice = Number(sale.products.price) || (salePrice / qty)
-        totalRealProfit += (unitPrice - unitCost) * qty
+        baseRealProfit += (unitPrice - unitCost) * qty
       } else {
-        totalRealProfit += salePrice
+        baseRealProfit += salePrice
       }
     })
+
+    // Pagos de mantenimiento y comisiones
+    const totalPaidMaintenance = paymentRecords
+      .filter((p) => p.type === 'mantenimiento')
+      .reduce((sum, p) => sum + (Number(p.amount) || 0), 0)
+
+    const totalPaidCommissions = paymentRecords
+      .filter((p) => p.type === 'comision')
+      .reduce((sum, p) => sum + (Number(p.amount) || 0), 0)
+
+    // Ganancia real neta: se le resta mantenimiento pagado, comisiones pagadas y cuentas por cobrar pendientes
+    const netRealProfit = baseRealProfit - totalPaidMaintenance - totalPaidCommissions - totalReceivables
 
     let filteredRevenue = 0
     filteredSales.forEach((s) => {
@@ -229,14 +239,9 @@ export default function FinancePage() {
 
     const totalTransactions = filteredSales.length
     const averageTicket = totalTransactions > 0 ? filteredRevenue / totalTransactions : 0
-    const profitMarginPercentage = totalRevenue > 0 ? (totalRealProfit / totalRevenue) * 100 : 0
+    const profitMarginPercentage = totalRevenue > 0 ? (netRealProfit / totalRevenue) * 100 : 0
     
     const totalAppMaintenanceFee = totalRevenue * 0.03
-    
-    const totalPaidMaintenance = paymentRecords
-      .filter((p) => p.type === 'mantenimiento')
-      .reduce((sum, p) => sum + (Number(p.amount) || 0), 0)
-
     const phantomMaintenancePending = Math.max(0, totalAppMaintenanceFee - totalPaidMaintenance)
 
     return {
@@ -245,10 +250,11 @@ export default function FinancePage() {
       totalUnits,
       totalTransactions,
       averageTicket,
-      totalRealProfit,
+      netRealProfit,
       profitMarginPercentage,
       appMaintenanceFee: totalAppMaintenanceFee,
       totalPaidMaintenance,
+      totalPaidCommissions,
       phantomMaintenancePending,
     }
   }, [sales, filteredSales, paymentRecords])
@@ -396,7 +402,6 @@ export default function FinancePage() {
           </span>
         </div>
 
-        {/* CUENTAS POR COBRAR */}
         <div className="rounded-2xl border border-amber-500/30 bg-amber-950/20 p-5 backdrop-blur-md">
           <div className="flex items-center justify-between">
             <span className="text-[10px] font-black uppercase tracking-widest text-amber-400">
@@ -411,8 +416,24 @@ export default function FinancePage() {
             onClick={() => setActiveTab(activeTab === 'receivables' ? 'all' : 'receivables')}
             className="mt-1 text-[10px] font-bold uppercase text-amber-500 hover:underline block"
           >
-            {activeTab === 'receivables' ? 'Ver todas las transacciones' : 'Ver pendientes →'}
+            {activeTab === 'receivables' ? 'Ver todas' : 'Ver pendientes →'}
           </button>
+        </div>
+
+        {/* GANANCIA REAL NETA (Actualizada con restas de mantenimiento, comisiones y cuentas por cobrar) */}
+        <div className="rounded-2xl border border-neutral-800 bg-neutral-900/60 p-5 backdrop-blur-md">
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] font-black uppercase tracking-widest text-neutral-400">
+              Ganancia Real Neta
+            </span>
+            <TrendingUp className="size-5 text-blue-400" />
+          </div>
+          <p className="mt-2 font-mono text-2xl font-black text-blue-400">
+            ${financialMetrics.netRealProfit.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+          </p>
+          <span className="mt-1 block text-[10px] font-bold text-neutral-500">
+            Menos mant., comis. y por cobrar
+          </span>
         </div>
 
         <div className="rounded-2xl border border-neutral-800 bg-neutral-900/60 p-5 backdrop-blur-md">
@@ -427,21 +448,6 @@ export default function FinancePage() {
           </p>
           <span className="mt-1 block text-[10px] font-bold text-neutral-500">
             Pagado: ${financialMetrics.totalPaidMaintenance.toFixed(2)}
-          </span>
-        </div>
-
-        <div className="rounded-2xl border border-neutral-800 bg-neutral-900/60 p-5 backdrop-blur-md">
-          <div className="flex items-center justify-between">
-            <span className="text-[10px] font-black uppercase tracking-widest text-neutral-400">
-              Ganancia Real ({financialMetrics.profitMarginPercentage.toFixed(1)}%)
-            </span>
-            <TrendingUp className="size-5 text-blue-400" />
-          </div>
-          <p className="mt-2 font-mono text-2xl font-black text-blue-400">
-            ${financialMetrics.totalRealProfit.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-          </p>
-          <span className="mt-1 block text-[10px] font-bold text-neutral-500">
-            Utilidad neta estimada
           </span>
         </div>
 
