@@ -14,6 +14,7 @@ import {
   Wrench,
   Award,
   Clock,
+  Edit3,
   X
 } from 'lucide-react'
 import { ADVISORS as DEFAULT_ADVISORS } from '@/lib/constants'
@@ -27,6 +28,8 @@ interface SaleRecord {
   advisor_name?: string
   total_price: number
   quantity: number
+  quantity_paid?: number
+  quantity_pending?: number
   payment_status?: 'pagado' | 'por_cobrar'
   created_at: string
   products?: {
@@ -55,6 +58,12 @@ export default function FinancePage() {
   const [timeRange, setTimeRange] = useState<'all' | 'today' | 'week' | 'month'>('all')
   const [activeTab, setActiveTab] = useState<'all' | 'receivables'>('all')
   const [searchTerm, setSearchTerm] = useState<string>('')
+
+  // Modal para editar pago parcial de una venta
+  const [editingSale, setEditingSale] = useState<SaleRecord | null>(null)
+  const [editPaidQty, setEditPaidQty] = useState<number>(0)
+  const [editPendingQty, setEditPendingQty] = useState<number>(0)
+  const [isSubmittingEdit, setIsSubmittingEdit] = useState<boolean>(false)
 
   // Modales
   const [isModalOpen, setIsModalOpen] = useState<boolean>(false)
@@ -112,23 +121,49 @@ export default function FinancePage() {
     fetchData()
   }, [fetchData])
 
-  // Cambiar estado de cobro de una venta (pagado <-> por_cobrar)
-  const handleTogglePaymentStatus = async (saleId: string, currentStatus?: string) => {
-    const newStatus = currentStatus === 'por_cobrar' ? 'pagado' : 'por_cobrar'
+  // Abrir modal de edición parcial de cobro
+  const handleOpenEditSale = (sale: SaleRecord) => {
+    const totalQty = sale.quantity || 1
+    const paid = sale.quantity_paid !== undefined ? sale.quantity_paid : (sale.payment_status === 'por_cobrar' ? 0 : totalQty)
+    const pending = sale.quantity_pending !== undefined ? sale.quantity_pending : (sale.payment_status === 'por_cobrar' ? totalQty : 0)
 
+    setEditingSale(sale)
+    setEditPaidQty(paid)
+    setEditPendingQty(pending)
+  }
+
+  // Guardar edición parcial de cobro
+  const handleSaveSalePaymentSplit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!editingSale) return
+    const totalQty = editingSale.quantity || 1
+
+    if (editPaidQty + editPendingQty !== totalQty) {
+      alert(`La suma de contado (${editPaidQty}) y pendiente (${editPendingQty}) debe ser exactamente igual a la cantidad total (${totalQty}).`)
+      return
+    }
+
+    setIsSubmittingEdit(true)
     try {
+      const newStatus = editPendingQty > 0 ? 'por_cobrar' : 'pagado'
       const { error } = await supabase
         .from('sales')
-        .update({ 
+        .update({
+          quantity_paid: editPaidQty,
+          quantity_pending: editPendingQty,
           payment_status: newStatus
         })
-        .eq('id', saleId)
+        .eq('id', editingSale.id)
 
       if (error) throw error
+
+      setEditingSale(null)
       await fetchData()
     } catch (error) {
-      console.error('Error actualizando estado de pago:', error)
-      alert('Error al actualizar estado de cobro.')
+      console.error('Error actualizando desglose de cobro:', error)
+      alert('Error al actualizar. Asegúrate de haber ejecutado el comando SQL para agregar quantity_paid y quantity_pending.')
+    } finally {
+      setIsSubmittingEdit(false)
     }
   }
 
@@ -137,7 +172,9 @@ export default function FinancePage() {
     const now = new Date()
 
     return sales.filter((sale) => {
-      const isPending = sale.payment_status === 'por_cobrar'
+      const pending = sale.quantity_pending !== undefined ? sale.quantity_pending : (sale.payment_status === 'por_cobrar' ? (sale.quantity || 1) : 0)
+      const isPending = pending > 0
+
       if (activeTab === 'receivables' && !isPending) {
         return false
       }
@@ -196,7 +233,7 @@ export default function FinancePage() {
     return map
   }, [advisors, sales, paymentRecords])
 
-  // Cálculo de métricas financieras según las reglas del usuario
+  // Cálculo de métricas financieras
   const financialMetrics = useMemo(() => {
     let totalRevenue = 0
     let totalReceivables = 0
@@ -206,18 +243,18 @@ export default function FinancePage() {
     sales.forEach((sale) => {
       const totalPrice = Number(sale.total_price) || 0
       const qty = Number(sale.quantity) || 1
+      const unitPriceTotal = totalPrice / qty
+
+      const pendingQty = sale.quantity_pending !== undefined ? sale.quantity_pending : (sale.payment_status === 'por_cobrar' ? qty : 0)
+      const pendingAmount = unitPriceTotal * pendingQty
 
       totalRevenue += totalPrice
-
-      if (sale.payment_status === 'por_cobrar') {
-        totalReceivables += totalPrice
-      }
-
+      totalReceivables += pendingAmount
       totalUnits += qty
 
       if (sale.products) {
         const unitCost = Number(sale.products.cost_price) || 0
-        const unitPrice = Number(sale.products.price) || (totalPrice / qty)
+        const unitPrice = Number(sale.products.price) || unitPriceTotal
         const profitPerUnit = unitPrice - unitCost
         baseRealProfit += profitPerUnit * qty
       } else {
@@ -233,7 +270,6 @@ export default function FinancePage() {
       .filter((p) => p.type === 'comision')
       .reduce((sum, p) => sum + (Number(p.amount) || 0), 0)
 
-    // El mantenimiento se calcula sobre los ingresos totales
     const totalAppMaintenanceFee = totalRevenue * 0.03
     const phantomMaintenancePending = Math.max(0, totalAppMaintenanceFee - totalPaidMaintenance)
 
@@ -276,6 +312,8 @@ export default function FinancePage() {
         advisor_name: advisorName || 'General',
         total_price: Number(amount),
         quantity: 1,
+        quantity_paid: 1,
+        quantity_pending: 0,
         payment_status: 'pagado',
         created_at: new Date().toISOString(),
       })
@@ -393,7 +431,6 @@ export default function FinancePage() {
 
       {/* MÉTRICAS CLAVE */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
-        {/* INGRESOS TOTALES (NO CAMBIAN AL MARCAR POR COBRAR) */}
         <div className="rounded-2xl border border-neutral-800 bg-neutral-900/60 p-5 backdrop-blur-md">
           <div className="flex items-center justify-between">
             <span className="text-[10px] font-black uppercase tracking-widest text-neutral-400">
@@ -427,7 +464,6 @@ export default function FinancePage() {
           </button>
         </div>
 
-        {/* GANANCIA REAL NETA (ÚNICO MONTO AL QUE SE LE RESTAN LAS CUENTAS POR COBRAR) */}
         <div className="rounded-2xl border border-neutral-800 bg-neutral-900/60 p-5 backdrop-blur-md">
           <div className="flex items-center justify-between">
             <span className="text-[10px] font-black uppercase tracking-widest text-neutral-400">
@@ -535,15 +571,18 @@ export default function FinancePage() {
                   <th className="p-4">Fecha & Hora</th>
                   <th className="p-4">Detalle / Producto</th>
                   <th className="p-4">Asesor</th>
+                  <th className="p-4 text-center">Desglose (Contado / Pend.)</th>
                   <th className="p-4 text-center">Estado</th>
-                  <th className="p-4 text-center">Cantidad</th>
                   <th className="p-4 text-right">Monto Total</th>
                   <th className="p-4 text-center">Acción Cobro</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-neutral-800/60">
                 {filteredSales.map((sale) => {
-                  const isPending = sale.payment_status === 'por_cobrar'
+                  const totalQty = sale.quantity || 1
+                  const paid = sale.quantity_paid ?? (sale.payment_status === 'por_cobrar' ? 0 : totalQty)
+                  const pending = sale.quantity_pending ?? (sale.payment_status === 'por_cobrar' ? totalQty : 0)
+                  const isPending = pending > 0
 
                   return (
                     <tr key={sale.id} className="transition-colors hover:bg-neutral-800/30">
@@ -572,6 +611,9 @@ export default function FinancePage() {
                           {sale.advisor_name || 'General'}
                         </div>
                       </td>
+                      <td className="p-4 text-center font-mono text-xs">
+                        <span className="text-emerald-400 font-bold">{paid} Contado</span> / <span className="text-amber-400 font-bold">{pending} Pend.</span>
+                      </td>
                       <td className="p-4 text-center">
                         <span
                           className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[10px] font-black uppercase tracking-wider ${
@@ -583,23 +625,15 @@ export default function FinancePage() {
                           {isPending ? 'Por Cobrar' : 'Cobrada'}
                         </span>
                       </td>
-                      <td className="p-4 text-center font-mono font-bold text-neutral-300">
-                        {sale.quantity || 1}
-                      </td>
                       <td className="p-4 text-right font-mono font-black text-emerald-400">
                         ${(Number(sale.total_price) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                       </td>
                       <td className="p-4 text-center">
                         <button
-                          onClick={() => handleTogglePaymentStatus(sale.id, sale.payment_status)}
-                          className={`rounded-xl px-3 py-1.5 text-[10px] font-black uppercase tracking-wider transition ${
-                            isPending
-                              ? 'bg-emerald-600 text-white hover:bg-emerald-700 shadow-sm'
-                              : 'bg-neutral-800 text-neutral-300 hover:bg-neutral-700'
-                          }`}
-                          title="Cambiar estado de cobro"
+                          onClick={() => handleOpenEditSale(sale)}
+                          className="inline-flex items-center gap-1.5 rounded-xl bg-neutral-800 px-3 py-1.5 text-[10px] font-black uppercase tracking-wider text-neutral-200 transition hover:bg-neutral-700"
                         >
-                          {isPending ? 'Marcar Cobrada' : 'Marcar Pendiente'}
+                          <Edit3 className="size-3.5" /> Editar Cobro
                         </button>
                       </td>
                     </tr>
@@ -610,6 +644,92 @@ export default function FinancePage() {
           </div>
         )}
       </div>
+
+      {/* MODAL EDITAR DESGLOSE DE COBRO (PARCIAL O TOTAL) */}
+      {editingSale && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-md rounded-3xl border border-neutral-800 bg-neutral-900 p-8 shadow-2xl space-y-6">
+            <div className="flex items-center justify-between border-b border-neutral-800 pb-3">
+              <h3 className="font-heading text-lg font-black uppercase tracking-wider text-white">
+                Editar Estado de Cobro
+              </h3>
+              <button onClick={() => setEditingSale(null)} className="text-neutral-400 hover:text-white">
+                <X className="size-5" />
+              </button>
+            </div>
+
+            <div className="space-y-1">
+              <p className="text-xs text-neutral-300 font-bold uppercase">
+                {editingSale.products?.name || 'Ingreso Directo'}
+              </p>
+              <p className="text-[10px] text-neutral-400 font-mono">
+                Cantidad Total: <strong className="text-white">{editingSale.quantity || 1}</strong> | Monto Total: <strong className="text-emerald-400">${editingSale.total_price}</strong>
+              </p>
+            </div>
+
+            <form onSubmit={handleSaveSalePaymentSplit} className="space-y-4">
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-[10px] font-black uppercase tracking-widest text-emerald-400 mb-1">
+                    Unidades Pagadas
+                  </label>
+                  <input
+                    type="number"
+                    min="0"
+                    max={editingSale.quantity || 1}
+                    value={editPaidQty}
+                    onChange={(e) => {
+                      const val = parseInt(e.target.value) || 0
+                      const max = editingSale.quantity || 1
+                      const clamped = Math.max(0, Math.min(max, val))
+                      setEditPaidQty(clamped)
+                      setEditPendingQty(max - clamped)
+                    }}
+                    className="w-full rounded-2xl border border-neutral-800 bg-neutral-950 px-4 py-3 font-mono text-sm font-bold text-emerald-400 outline-none focus:border-emerald-500 text-center"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[10px] font-black uppercase tracking-widest text-amber-400 mb-1">
+                    Unidades Pendientes
+                  </label>
+                  <input
+                    type="number"
+                    min="0"
+                    max={editingSale.quantity || 1}
+                    value={editPendingQty}
+                    onChange={(e) => {
+                      const val = parseInt(e.target.value) || 0
+                      const max = editingSale.quantity || 1
+                      const clamped = Math.max(0, Math.min(max, val))
+                      setEditPendingQty(clamped)
+                      setEditPaidQty(max - clamped)
+                    }}
+                    className="w-full rounded-2xl border border-neutral-800 bg-neutral-950 px-4 py-3 font-mono text-sm font-bold text-amber-400 outline-none focus:border-amber-500 text-center"
+                  />
+                </div>
+              </div>
+
+              <div className="flex gap-3 pt-4">
+                <button
+                  type="button"
+                  onClick={() => setEditingSale(null)}
+                  className="w-1/2 rounded-xl border border-neutral-800 py-3 font-heading text-xs font-bold uppercase text-neutral-400 hover:bg-neutral-800 hover:text-white transition"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSubmittingEdit}
+                  className="w-1/2 rounded-xl bg-red-600 py-3 font-heading text-xs font-black uppercase text-white hover:bg-red-700 transition disabled:opacity-50 shadow-lg shadow-red-600/35"
+                >
+                  {isSubmittingEdit ? 'Guardando...' : 'Guardar Desglose'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
 
       {/* MODAL INGRESO DIRECTO */}
       {isModalOpen && (
@@ -810,6 +930,7 @@ export default function FinancePage() {
                     placeholder="Ej: REF-98765432"
                     value={commissionRef}
                     onChange={(e) => setCommissionRef(e.target.value)}
+                    className="w-fullRef"
                     className="w-full rounded-2xl border border-neutral-800 bg-neutral-950 px-4 py-3 text-xs text-white outline-none focus:border-amber-500"
                   />
                 </div>
