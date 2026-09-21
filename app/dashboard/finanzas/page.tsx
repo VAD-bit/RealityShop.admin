@@ -13,6 +13,8 @@ import {
   Plus,
   Wrench,
   Award,
+  Clock,
+  CheckCircle2,
   X
 } from 'lucide-react'
 import { ADVISORS as DEFAULT_ADVISORS } from '@/lib/constants'
@@ -26,6 +28,7 @@ interface SaleRecord {
   advisor_name?: string
   total_price: number
   quantity: number
+  payment_status?: 'pagado' | 'por_cobrar'
   created_at: string
   products?: {
     name: string
@@ -51,6 +54,7 @@ export default function FinancePage() {
   const [advisors, setAdvisors] = useState<{ id: string; name: string }[]>(DEFAULT_ADVISORS)
   const [isLoading, setIsLoading] = useState<boolean>(true)
   const [timeRange, setTimeRange] = useState<'all' | 'today' | 'week' | 'month'>('all')
+  const [activeTab, setActiveTab] = useState<'all' | 'receivables'>('all')
   const [searchTerm, setSearchTerm] = useState<string>('')
 
   // Modales
@@ -109,11 +113,33 @@ export default function FinancePage() {
     fetchData()
   }, [fetchData])
 
-  // Filtrado por fecha y búsqueda
+  // Cambiar estado de cobro de una venta (pagado <-> por_cobrar)
+  const handleTogglePaymentStatus = async (saleId: string, currentStatus?: string) => {
+    const newStatus = currentStatus === 'por_cobrar' ? 'pagado' : 'por_cobrar'
+    try {
+      const { error } = await supabase
+        .from('sales')
+        .update({ payment_status: newStatus })
+        .eq('id', saleId)
+
+      if (error) throw error
+      await fetchData()
+    } catch (error) {
+      console.error('Error actualizando estado de pago:', error)
+      alert('Error al actualizar estado de cobro (asegúrate de haber ejecutado la migración de la columna payment_status en Supabase).')
+    }
+  }
+
+  // Filtrado por fecha, pestañas y búsqueda
   const filteredSales = useMemo(() => {
     const now = new Date()
 
     return sales.filter((sale) => {
+      // Pestaña Cuentas por Cobrar
+      if (activeTab === 'receivables' && sale.payment_status !== 'por_cobrar') {
+        return false
+      }
+
       const saleDate = new Date(sale.created_at)
 
       let matchesTime = true
@@ -136,9 +162,9 @@ export default function FinancePage() {
 
       return matchesTime && matchesSearch
     })
-  }, [sales, timeRange, searchTerm])
+  }, [sales, timeRange, activeTab, searchTerm])
 
-  // Cálculo de comisiones por asesor para el modal de pago
+  // Cálculo de comisiones por asesor
   const advisorCommissionsOwed = useMemo(() => {
     const map: Record<string, { totalSales: number; totalPaid: number; pending: number }> = {}
 
@@ -161,24 +187,30 @@ export default function FinancePage() {
       })
 
     Object.keys(map).forEach((adv) => {
-      const earned = map[adv].totalSales * 0.05
+      const earned = map[adv].totalSales * 0.10
       map[adv].pending = Math.max(0, earned - map[adv].totalPaid)
     })
 
     return map
   }, [advisors, sales, paymentRecords])
 
-  // Cálculo de métricas financieras
+  // Cálculo de métricas financieras y cuentas por cobrar
   const financialMetrics = useMemo(() => {
     let totalRevenue = 0
     let totalUnits = 0
     let totalRealProfit = 0
+    let totalReceivables = 0
 
     sales.forEach((sale) => {
       const salePrice = Number(sale.total_price) || 0
       const qty = Number(sale.quantity) || 1
 
-      totalRevenue += salePrice
+      if (sale.payment_status === 'por_cobrar') {
+        totalReceivables += salePrice
+      } else {
+        totalRevenue += salePrice
+      }
+
       totalUnits += qty
 
       if (sale.products) {
@@ -201,17 +233,15 @@ export default function FinancePage() {
     
     const totalAppMaintenanceFee = totalRevenue * 0.03
     
-    // Sumatoria de pagos de mantenimiento registrados en payment_records
     const totalPaidMaintenance = paymentRecords
       .filter((p) => p.type === 'mantenimiento')
       .reduce((sum, p) => sum + (Number(p.amount) || 0), 0)
 
-    // Cálculo fantasma automático: [Ingresos totales * 0.03 - Pagos mantenimiento]
     const phantomMaintenancePending = Math.max(0, totalAppMaintenanceFee - totalPaidMaintenance)
 
     return {
       totalRevenue: filteredRevenue,
-      globalRevenue: totalRevenue,
+      totalReceivables,
       totalUnits,
       totalTransactions,
       averageTicket,
@@ -234,6 +264,7 @@ export default function FinancePage() {
         advisor_name: advisorName || 'General',
         total_price: Number(amount),
         quantity: 1,
+        payment_status: 'pagado',
         created_at: new Date().toISOString(),
       })
 
@@ -250,7 +281,7 @@ export default function FinancePage() {
     }
   }
 
-  // Registrar Pago de Mantenimiento (A nombre de Victor Diaz por defecto)
+  // Registrar Pago de Mantenimiento
   const handleRegisterMaintenancePayment = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!maintenanceAmount || Number(maintenanceAmount) <= 0) return
@@ -314,17 +345,17 @@ export default function FinancePage() {
       <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
         <div>
           <h1 className="font-heading text-2xl font-black uppercase tracking-wider text-white">
-            FINANZAS Y CONTROL DE INGRESOS
+            FINANZAS Y CUENTAS POR COBRAR
           </h1>
           <p className="text-xs font-semibold uppercase text-neutral-400">
-            Resumen contable, pagos de mantenimiento y comisiones de asesores
+            Control contable, cuentas pendientes y pagos de comisiones / mantenimiento
           </p>
         </div>
 
         <div className="flex flex-wrap items-center gap-3">
           <button
             onClick={() => setIsCommissionModalOpen(true)}
-            className="inline-flex items-center gap-2 rounded-xl bg-amber-600 px-4 py-3 font-heading text-xs font-black uppercase tracking-widest text-white shadow-lg shadow-amber-600/30 transition-all hover:bg-amber-700 active:scale-95"
+            className="inline-flex items-center gap-2 rounded-xl bg-amber-600 px-4 py-3 font-heading text-xs font-black uppercase tracking-widest text-white shadow-lg shadow-amber-600/35 transition-all hover:bg-amber-700 active:scale-95"
           >
             <Award className="size-4" />
             Pago Comisión
@@ -332,7 +363,7 @@ export default function FinancePage() {
 
           <button
             onClick={() => setIsMaintenanceModalOpen(true)}
-            className="inline-flex items-center gap-2 rounded-xl bg-rose-600 px-4 py-3 font-heading text-xs font-black uppercase tracking-widest text-white shadow-lg shadow-rose-600/30 transition-all hover:bg-rose-700 active:scale-95"
+            className="inline-flex items-center gap-2 rounded-xl bg-rose-600 px-4 py-3 font-heading text-xs font-black uppercase tracking-widest text-white shadow-lg shadow-rose-600/35 transition-all hover:bg-rose-700 active:scale-95"
           >
             <Wrench className="size-4" />
             Pago Mantenimiento
@@ -340,7 +371,7 @@ export default function FinancePage() {
 
           <button
             onClick={() => setIsModalOpen(true)}
-            className="inline-flex items-center gap-2 rounded-xl bg-emerald-600 px-4 py-3 font-heading text-xs font-black uppercase tracking-widest text-white shadow-lg shadow-emerald-600/30 transition-all hover:bg-emerald-700 active:scale-95"
+            className="inline-flex items-center gap-2 rounded-xl bg-emerald-600 px-4 py-3 font-heading text-xs font-black uppercase tracking-widest text-white shadow-lg shadow-emerald-600/35 transition-all hover:bg-emerald-700 active:scale-95"
           >
             <Plus className="size-4" />
             Registrar Ingreso
@@ -353,7 +384,7 @@ export default function FinancePage() {
         <div className="rounded-2xl border border-neutral-800 bg-neutral-900/60 p-5 backdrop-blur-md">
           <div className="flex items-center justify-between">
             <span className="text-[10px] font-black uppercase tracking-widest text-neutral-400">
-              Ingresos (Filtrados)
+              Ingresos (Cobrados)
             </span>
             <DollarSign className="size-5 text-emerald-400" />
           </div>
@@ -363,6 +394,25 @@ export default function FinancePage() {
           <span className="mt-1 flex items-center gap-1 text-[10px] font-bold text-neutral-500">
             <ArrowUpRight className="size-3 text-emerald-400" /> {financialMetrics.totalTransactions} transacciones
           </span>
+        </div>
+
+        {/* CUENTAS POR COBRAR */}
+        <div className="rounded-2xl border border-amber-500/30 bg-amber-950/20 p-5 backdrop-blur-md">
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] font-black uppercase tracking-widest text-amber-400">
+              Cuentas por Cobrar
+            </span>
+            <Clock className="size-5 text-amber-400" />
+          </div>
+          <p className="mt-2 font-mono text-2xl font-black text-amber-400">
+            ${financialMetrics.totalReceivables.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+          </p>
+          <button
+            onClick={() => setActiveTab(activeTab === 'receivables' ? 'all' : 'receivables')}
+            className="mt-1 text-[10px] font-bold uppercase text-amber-500 hover:underline block"
+          >
+            {activeTab === 'receivables' ? 'Ver todas las transacciones' : 'Ver pendientes →'}
+          </button>
         </div>
 
         <div className="rounded-2xl border border-neutral-800 bg-neutral-900/60 p-5 backdrop-blur-md">
@@ -398,21 +448,6 @@ export default function FinancePage() {
         <div className="rounded-2xl border border-neutral-800 bg-neutral-900/60 p-5 backdrop-blur-md">
           <div className="flex items-center justify-between">
             <span className="text-[10px] font-black uppercase tracking-widest text-neutral-400">
-              Unidades Vendidas
-            </span>
-            <ShoppingBag className="size-5 text-purple-400" />
-          </div>
-          <p className="mt-2 font-mono text-2xl font-black text-white">
-            {financialMetrics.totalUnits}
-          </p>
-          <span className="mt-1 block text-[10px] font-bold text-neutral-500">
-            Artículos facturados
-          </span>
-        </div>
-
-        <div className="rounded-2xl border border-neutral-800 bg-neutral-900/60 p-5 backdrop-blur-md">
-          <div className="flex items-center justify-between">
-            <span className="text-[10px] font-black uppercase tracking-widest text-neutral-400">
               Ticket Promedio
             </span>
             <CreditCard className="size-5 text-amber-400" />
@@ -426,9 +461,32 @@ export default function FinancePage() {
         </div>
       </div>
 
-      {/* FILTROS Y BÚSQUEDA */}
+      {/* PESTAÑAS Y FILTROS */}
       <div className="flex flex-col gap-4 rounded-2xl border border-neutral-800/80 bg-neutral-900/40 p-4 sm:flex-row sm:items-center sm:justify-between">
-        <div className="relative flex-1">
+        <div className="flex items-center gap-2 rounded-xl border border-neutral-800 bg-neutral-950 p-1">
+          <button
+            onClick={() => setActiveTab('all')}
+            className={`rounded-lg px-4 py-2 text-xs font-bold uppercase transition ${
+              activeTab === 'all'
+                ? 'bg-red-600 text-white'
+                : 'text-neutral-400 hover:text-white'
+            }`}
+          >
+            Todas las Ventas
+          </button>
+          <button
+            onClick={() => setActiveTab('receivables')}
+            className={`rounded-lg px-4 py-2 text-xs font-bold uppercase transition flex items-center gap-1.5 ${
+              activeTab === 'receivables'
+                ? 'bg-amber-600 text-white'
+                : 'text-neutral-400 hover:text-white'
+            }`}
+          >
+            <Clock className="size-3.5" /> Cuentas por Cobrar
+          </button>
+        </div>
+
+        <div className="relative flex-1 max-w-md">
           <Search className="absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-neutral-500" />
           <input
             type="text"
@@ -438,37 +496,13 @@ export default function FinancePage() {
             className="w-full rounded-xl border border-neutral-800 bg-neutral-950 py-2.5 pl-10 pr-4 text-xs font-semibold text-white placeholder-neutral-500 outline-none transition focus:border-emerald-500"
           />
         </div>
-
-        <div className="flex items-center gap-2 rounded-xl border border-neutral-800 bg-neutral-950 p-1">
-          {(['all', 'today', 'week', 'month'] as const).map((range) => {
-            const labels = {
-              all: 'Todo',
-              today: 'Hoy',
-              week: 'Últimos 7 Días',
-              month: 'Este Mes',
-            }
-            return (
-              <button
-                key={range}
-                onClick={() => setTimeRange(range)}
-                className={`rounded-lg px-3 py-1.5 text-xs font-bold uppercase transition ${
-                  timeRange === range
-                    ? 'bg-emerald-600 text-white'
-                    : 'text-neutral-400 hover:text-white'
-                }`}
-              >
-                {labels[range]}
-              </button>
-            )
-          })}
-        </div>
       </div>
 
       {/* HISTORIAL DE TRANSACCIONES */}
       <div className="overflow-hidden rounded-2xl border border-neutral-800/80 bg-neutral-900/40 backdrop-blur-md">
-        <div className="border-b border-neutral-800 p-4">
+        <div className="flex items-center justify-between border-b border-neutral-800 p-4">
           <h2 className="font-heading text-sm font-black uppercase tracking-widest text-neutral-200">
-            HISTORIAL DE TRANSACCIONES ({filteredSales.length})
+            {activeTab === 'receivables' ? 'CUENTAS PENDIENTES POR COBRAR' : 'HISTORIAL DE TRANSACCIONES'} ({filteredSales.length})
           </h2>
         </div>
 
@@ -478,7 +512,7 @@ export default function FinancePage() {
           </div>
         ) : filteredSales.length === 0 ? (
           <div className="p-8 text-center text-xs font-bold uppercase text-neutral-500">
-            No se encontraron transacciones registradas en este período.
+            No se encontraron transacciones en esta sección.
           </div>
         ) : (
           <div className="overflow-x-auto">
@@ -488,46 +522,75 @@ export default function FinancePage() {
                   <th className="p-4">Fecha & Hora</th>
                   <th className="p-4">Detalle / Producto</th>
                   <th className="p-4">Asesor</th>
+                  <th className="p-4 text-center">Estado de Cobro</th>
                   <th className="p-4 text-center">Cantidad</th>
                   <th className="p-4 text-right">Monto Total</th>
+                  <th className="p-4 text-center">Acción Cobro</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-neutral-800/60">
-                {filteredSales.map((sale) => (
-                  <tr key={sale.id} className="transition-colors hover:bg-neutral-800/30">
-                    <td className="p-4 font-mono text-xs text-neutral-400">
-                      <div className="flex items-center gap-2">
-                        <Calendar className="size-3 text-neutral-500" />
-                        {new Date(sale.created_at).toLocaleString('es-ES', {
-                          dateStyle: 'short',
-                          timeStyle: 'short',
-                        })}
-                      </div>
-                    </td>
-                    <td className="p-4">
-                      <span className="font-bold uppercase text-white">
-                        {sale.products?.name || 'Ingreso Directo'}
-                      </span>
-                      {sale.products?.category && (
-                        <span className="ml-2 rounded-md bg-neutral-800 px-2 py-0.5 text-[10px] uppercase text-neutral-400">
-                          {sale.products.category}
+                {filteredSales.map((sale) => {
+                  const isPending = sale.payment_status === 'por_cobrar'
+                  return (
+                    <tr key={sale.id} className="transition-colors hover:bg-neutral-800/30">
+                      <td className="p-4 font-mono text-xs text-neutral-400">
+                        <div className="flex items-center gap-2">
+                          <Calendar className="size-3 text-neutral-500" />
+                          {new Date(sale.created_at).toLocaleString('es-ES', {
+                            dateStyle: 'short',
+                            timeStyle: 'short',
+                          })}
+                        </div>
+                      </td>
+                      <td className="p-4">
+                        <span className="font-bold uppercase text-white">
+                          {sale.products?.name || 'Ingreso Directo'}
                         </span>
-                      )}
-                    </td>
-                    <td className="p-4">
-                      <div className="flex items-center gap-1.5 font-semibold text-neutral-300">
-                        <User className="size-3 text-emerald-400" />
-                        {sale.advisor_name || 'General'}
-                      </div>
-                    </td>
-                    <td className="p-4 text-center font-mono font-bold text-neutral-300">
-                      {sale.quantity || 1}
-                    </td>
-                    <td className="p-4 text-right font-mono font-black text-emerald-400">
-                      ${(Number(sale.total_price) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                    </td>
-                  </tr>
-                ))}
+                        {sale.products?.category && (
+                          <span className="ml-2 rounded-md bg-neutral-800 px-2 py-0.5 text-[10px] uppercase text-neutral-400">
+                            {sale.products.category}
+                          </span>
+                        )}
+                      </td>
+                      <td className="p-4">
+                        <div className="flex items-center gap-1.5 font-semibold text-neutral-300">
+                          <User className="size-3 text-emerald-400" />
+                          {sale.advisor_name || 'General'}
+                        </div>
+                      </td>
+                      <td className="p-4 text-center">
+                        <span
+                          className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[10px] font-black uppercase tracking-wider ${
+                            isPending
+                              ? 'bg-amber-500/10 border border-amber-500/30 text-amber-400'
+                              : 'bg-emerald-500/10 border border-emerald-500/30 text-emerald-400'
+                          }`}
+                        >
+                          {isPending ? 'Por Cobrar' : 'Cobrada'}
+                        </span>
+                      </td>
+                      <td className="p-4 text-center font-mono font-bold text-neutral-300">
+                        {sale.quantity || 1}
+                      </td>
+                      <td className="p-4 text-right font-mono font-black text-emerald-400">
+                        ${(Number(sale.total_price) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </td>
+                      <td className="p-4 text-center">
+                        <button
+                          onClick={() => handleTogglePaymentStatus(sale.id, sale.payment_status)}
+                          className={`rounded-xl px-3 py-1.5 text-[10px] font-black uppercase tracking-wider transition ${
+                            isPending
+                              ? 'bg-emerald-600 text-white hover:bg-emerald-700 shadow-sm'
+                              : 'bg-neutral-800 text-neutral-300 hover:bg-neutral-700'
+                          }`}
+                          title="Cambiar estado de cobro"
+                        >
+                          {isPending ? 'Marcar Cobrada' : 'Marcar Pendiente'}
+                        </button>
+                      </td>
+                    </tr>
+                  )
+                })}
               </tbody>
             </table>
           </div>
@@ -587,7 +650,7 @@ export default function FinancePage() {
                 <button
                   type="submit"
                   disabled={isSubmitting}
-                  className="w-1/2 rounded-xl bg-emerald-600 py-3 font-heading text-xs font-black uppercase text-white hover:bg-emerald-500 transition disabled:opacity-50 shadow-lg shadow-emerald-600/30"
+                  className="w-1/2 rounded-xl bg-emerald-600 py-3 font-heading text-xs font-black uppercase text-white hover:bg-emerald-500 transition disabled:opacity-50 shadow-lg shadow-emerald-600/35"
                 >
                   {isSubmitting ? 'Guardando...' : 'Guardar Ingreso'}
                 </button>
@@ -597,7 +660,7 @@ export default function FinancePage() {
         </div>
       )}
 
-      {/* MODAL PAGO DE MANTENIMIENTO (A nombre de Victor Diaz por defecto) */}
+      {/* MODAL PAGO DE MANTENIMIENTO */}
       {isMaintenanceModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm">
           <div className="w-full max-w-md rounded-3xl border border-neutral-800 bg-neutral-900 p-8 shadow-2xl space-y-6">
@@ -660,7 +723,7 @@ export default function FinancePage() {
                 <button
                   type="submit"
                   disabled={isSubmittingMaintenance}
-                  className="w-1/2 rounded-xl bg-rose-600 py-3 font-heading text-xs font-black uppercase text-white hover:bg-rose-700 transition disabled:opacity-50 shadow-lg shadow-rose-600/30"
+                  className="w-1/2 rounded-xl bg-rose-600 py-3 font-heading text-xs font-black uppercase text-white hover:bg-rose-700 transition disabled:opacity-50 shadow-lg shadow-rose-600/35"
                 >
                   {isSubmittingMaintenance ? 'Registrando...' : 'Confirmar Pago'}
                 </button>
@@ -720,7 +783,7 @@ export default function FinancePage() {
                     placeholder="0.00"
                     value={commissionAmount}
                     onChange={(e) => setCommissionAmount(e.target.value)}
-                    className="w-full rounded-2xl border border-neutral-800 bg-neutral-950 px-4 py-3 font-mono text-sm font-bold text-amber-400 outline-none focus:border-amber-500"
+                    className="w-full rounded-2xl border border-neutral-800 bg-neutral-950 px-4 py-3 font-mono text-sm font-black text-amber-400 outline-none focus:border-amber-500"
                   />
                 </div>
 
@@ -748,7 +811,7 @@ export default function FinancePage() {
                   <button
                     type="submit"
                     disabled={isSubmittingCommission}
-                    className="w-1/2 rounded-xl bg-amber-600 py-3 font-heading text-xs font-black uppercase text-white hover:bg-amber-700 transition disabled:opacity-50 shadow-lg shadow-amber-600/30"
+                    className="w-1/2 rounded-xl bg-amber-600 py-3 font-heading text-xs font-black uppercase text-white hover:bg-amber-700 transition disabled:opacity-50 shadow-lg shadow-amber-600/35"
                   >
                     {isSubmittingCommission ? 'Registrando...' : 'Confirmar Pago'}
                   </button>
