@@ -8,13 +8,11 @@ import {
   Minus, 
   Trash2, 
   Printer, 
-  CheckCircle2, 
   CreditCard, 
   Smartphone, 
   Banknote, 
   DollarSign,
-  UserCheck,
-  Package
+  UserCheck
 } from 'lucide-react'
 import Image from 'next/image'
 import { ProductItem, InventoryVariant } from '@/lib/types'
@@ -27,6 +25,8 @@ interface CartItem {
   product: ProductItem
   variant: InventoryVariant
   quantity: number
+  quantityPaid: number
+  quantityPending: number
 }
 
 export default function POSPage() {
@@ -45,10 +45,9 @@ export default function POSPage() {
   const [lastCompletedSale, setLastCompletedSale] = useState<any>(null)
   const [showReceiptModal, setShowReceiptModal] = useState<boolean>(false)
 
-  // Modal para seleccionar talla cuando se hace clic en un producto
+  // Modal para seleccionar talla
   const [activeProductForVariant, setActiveProductForVariant] = useState<ProductItem | null>(null)
 
-  // Cargar productos y asesores
   const fetchData = useCallback(async () => {
     setIsLoading(true)
     try {
@@ -60,7 +59,6 @@ export default function POSPage() {
       if (prodError) throw prodError
       if (prodData) setProducts(prodData as ProductItem[])
 
-      // Intentar cargar asesores de Supabase si existe la tabla, sino usar defaults
       const { data: advData, error: advError } = await supabase
         .from('advisors')
         .select('*')
@@ -80,7 +78,6 @@ export default function POSPage() {
     fetchData()
   }, [fetchData])
 
-  // Filtrado de productos
   const filteredProducts = useMemo(() => {
     return products.filter((p) => {
       const matchesSearch = p.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -90,7 +87,6 @@ export default function POSPage() {
     })
   }, [products, searchTerm, selectedCategory])
 
-  // Agregar al carrito
   const handleAddToCart = (product: ProductItem, variant: InventoryVariant) => {
     if (variant.stock <= 0) return
 
@@ -104,16 +100,16 @@ export default function POSPage() {
         const currentQty = updated[existingIndex].quantity
         if (currentQty < variant.stock) {
           updated[existingIndex].quantity += 1
+          updated[existingIndex].quantityPaid += 1 // por defecto todo contado
         }
         return updated
       } else {
-        return [...prev, { product, variant, quantity: 1 }]
+        return [...prev, { product, variant, quantity: 1, quantityPaid: 1, quantityPending: 0 }]
       }
     })
     setActiveProductForVariant(null)
   }
 
-  // Modificar cantidad en carrito
   const handleUpdateQuantity = (index: number, delta: number) => {
     setCart((prev) => {
       const updated = [...prev]
@@ -124,7 +120,21 @@ export default function POSPage() {
         return prev.filter((_, i) => i !== index)
       } else if (newQty <= item.variant.stock) {
         item.quantity = newQty
+        // Ajustar quantityPaid proporcionalmente o dejar quantityPaid por defecto igual a newQty
+        item.quantityPaid = newQty
+        item.quantityPending = 0
       }
+      return updated
+    })
+  }
+
+  const handleSplitChange = (index: number, paid: number) => {
+    setCart((prev) => {
+      const updated = [...prev]
+      const item = updated[index]
+      const clampedPaid = Math.max(0, Math.min(item.quantity, paid))
+      item.quantityPaid = clampedPaid
+      item.quantityPending = item.quantity - clampedPaid
       return updated
     })
   }
@@ -133,35 +143,34 @@ export default function POSPage() {
     setCart((prev) => prev.filter((_, i) => i !== index))
   }
 
-  // Cálculo del total del carrito
   const calculatedSubtotal = useMemo(() => {
     return cart.reduce((sum, item) => sum + (Number(item.product.price) || 0) * item.quantity, 0)
   }, [cart])
 
   const finalAmountToPay = customTotal !== '' ? Number(customTotal) || 0 : calculatedSubtotal
 
-  // Procesar Venta POS
   const handleProcessSale = async () => {
     if (cart.length === 0) return
     setIsProcessing(true)
 
     try {
       const saleDate = new Date().toISOString()
-      const totalUnits = cart.reduce((sum, i) => sum + i.quantity, 0)
       
-      // Registrar en sales cada línea o una venta agrupada
       for (const item of cart) {
         const itemTotal = (Number(item.product.price) || 0) * item.quantity
+        const paymentStatus = item.quantityPending > 0 && item.quantityPaid === 0 ? 'por_cobrar' : 'pagado'
 
         await supabase.from('sales').insert({
           product_id: item.product.id,
           advisor_name: selectedAdvisor || 'General',
           total_price: itemTotal,
           quantity: item.quantity,
+          quantity_paid: item.quantityPaid,
+          quantity_pending: item.quantityPending,
+          payment_status: paymentStatus,
           created_at: saleDate,
         })
 
-        // Restar stock de la variante
         const newStock = Math.max(0, item.variant.stock - item.quantity)
         if (item.variant.id) {
           await supabase
@@ -194,14 +203,13 @@ export default function POSPage() {
     }
   }
 
-  // Imprimir Factura / Comprobante
   const handlePrintReceipt = () => {
     window.print()
   }
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 pb-12">
-      {/* COLUMNA IZQUIERDA: CATÁLOGO DE PRODUCTOS (POS GRID) */}
+      {/* COLUMNA IZQUIERDA: CATÁLOGO */}
       <div className="lg:col-span-7 space-y-6">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
@@ -214,7 +222,6 @@ export default function POSPage() {
           </div>
         </div>
 
-        {/* BARRA DE BÚSQUEDA Y CATEGORÍAS */}
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
           <div className="relative flex-1">
             <Search className="absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-neutral-500" />
@@ -239,7 +246,6 @@ export default function POSPage() {
           </select>
         </div>
 
-        {/* GRID DE PRODUCTOS */}
         {isLoading ? (
           <div className="p-12 text-center text-xs font-bold uppercase text-neutral-500">
             Cargando catálogo POS...
@@ -304,7 +310,7 @@ export default function POSPage() {
         )}
       </div>
 
-      {/* COLUMNA DERECHA: CARRITO Y FACTURACIÓN */}
+      {/* COLUMNA DERECHA: CARRITO Y DIVISIÓN CONTADO / PENDIENTE */}
       <div className="lg:col-span-5 space-y-6">
         <div className="rounded-2xl border border-neutral-800 bg-neutral-900/60 p-5 backdrop-blur-md flex flex-col justify-between min-h-[650px] shadow-2xl">
           <div className="space-y-5">
@@ -320,7 +326,6 @@ export default function POSPage() {
               </span>
             </div>
 
-            {/* SELECCIÓN DE ASESOR */}
             <div className="space-y-1.5">
               <label className="flex items-center gap-1.5 text-[10px] font-black uppercase tracking-widest text-neutral-400">
                 <UserCheck className="size-3.5 text-red-500" /> Asesor Responsable
@@ -338,7 +343,6 @@ export default function POSPage() {
               </select>
             </div>
 
-            {/* MÉTODO DE PAGO */}
             <div className="space-y-1.5">
               <label className="text-[10px] font-black uppercase tracking-widest text-neutral-400">
                 Método de Pago
@@ -371,12 +375,11 @@ export default function POSPage() {
               </div>
             </div>
 
-            {/* LISTA DE ÍTEMS EN EL CARRITO */}
             <div className="space-y-2">
               <label className="text-[10px] font-black uppercase tracking-widest text-neutral-400">
-                Productos Seleccionados
+                Productos en Carrito
               </label>
-              <div className="max-h-52 overflow-y-auto space-y-2 pr-1">
+              <div className="max-h-60 overflow-y-auto space-y-3 pr-1">
                 {cart.length === 0 ? (
                   <div className="py-12 text-center text-xs font-bold uppercase text-neutral-500">
                     El carrito está vacío. Haz clic en un producto para agregarlo.
@@ -384,50 +387,80 @@ export default function POSPage() {
                 ) : (
                   cart.map((item, idx) => {
                     const itemTotal = (Number(item.product.price) || 0) * item.quantity
+                    const hasMultiple = item.quantity >= 2
+
                     return (
                       <div
                         key={`${item.product.id}-${item.variant.id}-${idx}`}
-                        className="flex items-center justify-between rounded-xl border border-neutral-800 bg-neutral-950 p-2.5"
+                        className="rounded-xl border border-neutral-800 bg-neutral-950 p-3 space-y-2.5"
                       >
-                        <div className="flex-1 pr-2">
-                          <h5 className="font-bold text-xs uppercase text-white line-clamp-1">
-                            {item.product.name}
-                          </h5>
-                          <span className="font-mono text-[10px] text-neutral-400">
-                            Talla/Var: <strong className="text-red-400">{item.variant.size_or_detail}</strong> | ${item.product.price} c/u
-                          </span>
-                        </div>
-
-                        <div className="flex items-center gap-2">
-                          <div className="flex items-center gap-1 bg-neutral-900 border border-neutral-800 rounded-lg p-1">
-                            <button
-                              onClick={() => handleUpdateQuantity(idx, -1)}
-                              className="p-1 text-neutral-400 hover:text-white"
-                            >
-                              <Minus className="size-3" />
-                            </button>
-                            <span className="font-mono text-xs font-bold px-1.5 text-white">
-                              {item.quantity}
+                        <div className="flex items-center justify-between">
+                          <div className="pr-2">
+                            <h5 className="font-bold text-xs uppercase text-white line-clamp-1">
+                              {item.product.name}
+                            </h5>
+                            <span className="font-mono text-[10px] text-neutral-400">
+                              Talla: <strong className="text-red-400">{item.variant.size_or_detail}</strong> | ${item.product.price} c/u
                             </span>
-                            <button
-                              onClick={() => handleUpdateQuantity(idx, 1)}
-                              className="p-1 text-neutral-400 hover:text-white"
-                            >
-                              <Plus className="size-3" />
-                            </button>
                           </div>
 
-                          <span className="font-mono text-xs font-black text-emerald-400 w-16 text-right">
-                            ${itemTotal.toFixed(2)}
-                          </span>
+                          <div className="flex items-center gap-2">
+                            <div className="flex items-center gap-1 bg-neutral-900 border border-neutral-800 rounded-lg p-1">
+                              <button
+                                onClick={() => handleUpdateQuantity(idx, -1)}
+                                className="p-1 text-neutral-400 hover:text-white"
+                              >
+                                <Minus className="size-3" />
+                              </button>
+                              <span className="font-mono text-xs font-bold px-1.5 text-white">
+                                {item.quantity}
+                              </span>
+                              <button
+                                onClick={() => handleUpdateQuantity(idx, 1)}
+                                className="p-1 text-neutral-400 hover:text-white"
+                              >
+                                <Plus className="size-3" />
+                              </button>
+                            </div>
 
-                          <button
-                            onClick={() => handleRemoveCartItem(idx)}
-                            className="p-1 text-neutral-500 hover:text-red-500 transition"
-                          >
-                            <Trash2 className="size-4" />
-                          </button>
+                            <span className="font-mono text-xs font-black text-emerald-400 w-16 text-right">
+                              ${itemTotal.toFixed(2)}
+                            </span>
+
+                            <button
+                              onClick={() => handleRemoveCartItem(idx)}
+                              className="p-1 text-neutral-500 hover:text-red-500 transition"
+                            >
+                              <Trash2 className="size-4" />
+                            </button>
+                          </div>
                         </div>
+
+                        {/* SI LA CANTIDAD ES 2 O MÁS, DESPLEGAR MENÚ PARA ELEGIR CONTADO VS PENDIENTE */}
+                        {hasMultiple && (
+                          <div className="rounded-lg border border-amber-500/30 bg-amber-950/10 p-2.5 space-y-1.5">
+                            <span className="text-[10px] font-black uppercase text-amber-400 block">
+                              Desglose de Pago (Total: {item.quantity})
+                            </span>
+                            <div className="flex items-center justify-between gap-3 text-xs">
+                              <div className="flex items-center gap-1">
+                                <span className="text-neutral-400 text-[10px]">Contado:</span>
+                                <input
+                                  type="number"
+                                  min="0"
+                                  max={item.quantity}
+                                  value={item.quantityPaid}
+                                  onChange={(e) => handleSplitChange(idx, parseInt(e.target.value) || 0)}
+                                  className="w-12 rounded border border-neutral-700 bg-neutral-900 px-1.5 py-0.5 text-center font-mono font-bold text-emerald-400 text-xs"
+                                />
+                              </div>
+                              <div className="flex items-center gap-1">
+                                <span className="text-neutral-400 text-[10px]">Pendiente:</span>
+                                <strong className="font-mono text-amber-400">{item.quantityPending}</strong>
+                              </div>
+                            </div>
+                          </div>
+                        )}
                       </div>
                     )
                   })
@@ -436,7 +469,6 @@ export default function POSPage() {
             </div>
           </div>
 
-          {/* TOTALES Y BOTÓN DE COBRO */}
           <div className="space-y-4 pt-4 border-t border-neutral-800">
             <div className="space-y-1.5">
               <div className="flex justify-between text-xs font-bold text-neutral-400">
@@ -468,7 +500,7 @@ export default function POSPage() {
         </div>
       </div>
 
-      {/* MODAL SELECCIÓN DE VARIANTE / TALLA AL HACER CLIC EN PRODUCTO */}
+      {/* MODAL TALLA */}
       {activeProductForVariant && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm">
           <div className="w-full max-w-md rounded-3xl border border-neutral-800 bg-[#0c0c0e] p-6 shadow-2xl space-y-5">
@@ -523,12 +555,10 @@ export default function POSPage() {
         </div>
       )}
 
-      {/* MODAL DE RECIBO / FACTURA EXITOSA CON OPCIÓN DE IMPRESIÓN */}
+      {/* MODAL RECIBO */}
       {showReceiptModal && lastCompletedSale && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 p-4 backdrop-blur-sm overflow-y-auto">
           <div className="relative my-auto w-full max-w-lg rounded-3xl border border-neutral-800 bg-white p-8 text-neutral-900 shadow-2xl space-y-6">
-            
-            {/* CONTENIDO DE FACTURA (IMPRIMIBLE) */}
             <div id="printable-receipt" className="space-y-6">
               <div className="text-center border-b border-neutral-200 pb-4 space-y-1">
                 <div className="inline-block px-3 py-1 bg-red-600 text-white font-black text-sm uppercase rounded-lg mb-1">
@@ -573,7 +603,7 @@ export default function POSPage() {
                         <tr key={idx} className="font-mono">
                           <td className="py-2.5 font-bold uppercase text-black">{item.product.name}</td>
                           <td className="py-2.5 text-center">{item.variant.size_or_detail}</td>
-                          <td className="py-2.5 text-center">{item.quantity}</td>
+                          <td className="py-2.5 text-center">{item.quantity} (Contado: {item.quantityPaid}, Pend: {item.quantityPending})</td>
                           <td className="py-2.5 text-right">${Number(item.product.price).toFixed(2)}</td>
                           <td className="py-2.5 text-right font-black">${itemTot.toFixed(2)}</td>
                         </tr>
@@ -591,7 +621,6 @@ export default function POSPage() {
               </div>
             </div>
 
-            {/* BOTONES DE ACCIÓN (NO SE IMPRIMEN SI SE CONFIGURA CSS PRINT, PERO ÚTILES EN PANTALLA) */}
             <div className="flex gap-3 pt-4 border-t border-neutral-200">
               <button
                 onClick={handlePrintReceipt}
