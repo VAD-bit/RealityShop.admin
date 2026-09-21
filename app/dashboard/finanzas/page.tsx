@@ -116,18 +116,13 @@ export default function FinancePage() {
 
   // Cambiar estado de cobro de una venta (pagado <-> por_cobrar)
   const handleTogglePaymentStatus = async (saleId: string, currentStatus?: string) => {
-    const sale = sales.find(s => s.id === saleId)
     const newStatus = currentStatus === 'por_cobrar' ? 'pagado' : 'por_cobrar'
-    const newPaidQty = newStatus === 'pagado' ? (sale?.quantity || 1) : (sale?.quantity_paid || 0)
-    const newPendingQty = newStatus === 'por_cobrar' ? (sale?.quantity || 1) : 0
 
     try {
       const { error } = await supabase
         .from('sales')
         .update({ 
-          payment_status: newStatus,
-          quantity_paid: newPaidQty,
-          quantity_pending: newPendingQty
+          payment_status: newStatus
         })
         .eq('id', saleId)
 
@@ -135,7 +130,7 @@ export default function FinancePage() {
       await fetchData()
     } catch (error) {
       console.error('Error actualizando estado de pago:', error)
-      alert('Error al actualizar estado de cobro.')
+      alert('Error al actualizar estado de cobro. Asegúrate de ejecutar el comando SQL de actualización en Supabase.')
     }
   }
 
@@ -203,7 +198,7 @@ export default function FinancePage() {
     return map
   }, [advisors, sales, paymentRecords])
 
-  // Cálculo de métricas financieras de acuerdo a las reglas del usuario
+  // Cálculo de métricas financieras
   const financialMetrics = useMemo(() => {
     let totalCollectedRevenue = 0
     let totalReceivables = 0
@@ -215,28 +210,32 @@ export default function FinancePage() {
       const qty = Number(sale.quantity) || 1
       const unitTotalPrice = totalPrice / qty
 
-      const paidQty = sale.quantity_paid !== undefined ? sale.quantity_paid : (sale.payment_status === 'por_cobrar' ? 0 : qty)
-      const pendingQty = sale.quantity_pending !== undefined ? sale.quantity_pending : (sale.payment_status === 'por_cobrar' ? qty : 0)
+      const isPending = sale.payment_status === 'por_cobrar'
+      const paidQty = sale.quantity_paid !== undefined ? sale.quantity_paid : (isPending ? 0 : qty)
+      const pendingQty = sale.quantity_pending !== undefined ? sale.quantity_pending : (isPending ? qty : 0)
 
       const paidRevenue = unitTotalPrice * paidQty
       const pendingRevenue = unitTotalPrice * pendingQty
 
-      totalCollectedRevenue += paidRevenue
-      totalReceivables += pendingRevenue
+      if (isPending) {
+        totalReceivables += totalPrice
+      } else {
+        totalCollectedRevenue += paidRevenue
+        totalReceivables += pendingRevenue
+      }
+
       totalUnits += qty
 
-      // Ganancia unitaria
       if (sale.products) {
         const unitCost = Number(sale.products.cost_price) || 0
         const unitPrice = Number(sale.products.price) || unitTotalPrice
         const profitPerUnit = unitPrice - unitCost
-        collectedRealProfit += profitPerUnit * paidQty
+        collectedRealProfit += profitPerUnit * (isPending ? 0 : paidQty)
       } else {
-        collectedRealProfit += paidRevenue
+        collectedRealProfit += (isPending ? 0 : paidRevenue)
       }
     })
 
-    // Pagos de mantenimiento y comisiones
     const totalPaidMaintenance = paymentRecords
       .filter((p) => p.type === 'mantenimiento')
       .reduce((sum, p) => sum + (Number(p.amount) || 0), 0)
@@ -245,19 +244,16 @@ export default function FinancePage() {
       .filter((p) => p.type === 'comision')
       .reduce((sum, p) => sum + (Number(p.amount) || 0), 0)
 
-    // El mantenimiento se calcula exclusivamente de los ingresos cobrados (3% s/ ingresos cobrados)
     const totalAppMaintenanceFee = totalCollectedRevenue * 0.03
     const phantomMaintenancePending = Math.max(0, totalAppMaintenanceFee - totalPaidMaintenance)
-
-    // Ganancia real neta: Ganancia de lo cobrado - Mantenimiento pagado - Comisiones pagadas
     const netRealProfit = collectedRealProfit - totalPaidMaintenance - totalPaidCommissions
 
     let filteredRevenue = 0
     filteredSales.forEach((s) => {
       const totalPrice = Number(s.total_price) || 0
-      const qty = Number(s.quantity) || 1
-      const paidQty = s.quantity_paid !== undefined ? s.quantity_paid : (s.payment_status === 'por_cobrar' ? 0 : qty)
-      filteredRevenue += (totalPrice / qty) * paidQty
+      if (s.payment_status !== 'por_cobrar') {
+        filteredRevenue += totalPrice
+      }
     })
 
     const totalTransactions = filteredSales.length
@@ -291,8 +287,6 @@ export default function FinancePage() {
         advisor_name: advisorName || 'General',
         total_price: Number(amount),
         quantity: 1,
-        quantity_paid: 1,
-        quantity_pending: 0,
         payment_status: 'pagado',
         created_at: new Date().toISOString(),
       })
@@ -550,17 +544,15 @@ export default function FinancePage() {
                   <th className="p-4">Fecha & Hora</th>
                   <th className="p-4">Detalle / Producto</th>
                   <th className="p-4">Asesor</th>
-                  <th className="p-4 text-center">Desglose (Contado / Pend.)</th>
                   <th className="p-4 text-center">Estado</th>
+                  <th className="p-4 text-center">Cantidad</th>
                   <th className="p-4 text-right">Monto Total</th>
                   <th className="p-4 text-center">Acción Cobro</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-neutral-800/60">
                 {filteredSales.map((sale) => {
-                  const paid = sale.quantity_paid ?? (sale.payment_status === 'por_cobrar' ? 0 : sale.quantity)
-                  const pending = sale.quantity_pending ?? (sale.payment_status === 'por_cobrar' ? sale.quantity : 0)
-                  const isPending = pending > 0
+                  const isPending = sale.payment_status === 'por_cobrar'
 
                   return (
                     <tr key={sale.id} className="transition-colors hover:bg-neutral-800/30">
@@ -589,9 +581,6 @@ export default function FinancePage() {
                           {sale.advisor_name || 'General'}
                         </div>
                       </td>
-                      <td className="p-4 text-center font-mono text-xs">
-                        <span className="text-emerald-400 font-bold">{paid} Contado</span> / <span className="text-amber-400 font-bold">{pending} Pend.</span>
-                      </td>
                       <td className="p-4 text-center">
                         <span
                           className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[10px] font-black uppercase tracking-wider ${
@@ -602,6 +591,9 @@ export default function FinancePage() {
                         >
                           {isPending ? 'Por Cobrar' : 'Cobrada'}
                         </span>
+                      </td>
+                      <td className="p-4 text-center font-mono font-bold text-neutral-300">
+                        {sale.quantity || 1}
                       </td>
                       <td className="p-4 text-right font-mono font-black text-emerald-400">
                         ${(Number(sale.total_price) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
@@ -616,7 +608,7 @@ export default function FinancePage() {
                           }`}
                           title="Cambiar estado de cobro"
                         >
-                          {isPending ? 'Marcar Todo Cobrado' : 'Marcar Pendiente'}
+                          {isPending ? 'Marcar Cobrada' : 'Marcar Pendiente'}
                         </button>
                       </td>
                     </tr>
